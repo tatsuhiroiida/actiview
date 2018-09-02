@@ -1,11 +1,16 @@
 package iida.work.actiview
 
+import android.graphics.Color
 import android.os.Bundle
 import android.os.RemoteException
 import android.support.v7.app.AppCompatActivity
 import android.util.Log
+import android.widget.Toast
+import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
+import kotlinx.android.synthetic.main.activity_main.*
 import org.altbeacon.beacon.*
 import org.altbeacon.beacon.MonitorNotifier.INSIDE
 
@@ -18,6 +23,7 @@ class MainActivity : AppCompatActivity(), IActivityLifeCycle, BeaconConsumer {
 
     private val TARGET_UUID: String = "2edb0100-022a-468c-a7cc-d3e066206d59"
 
+    private val name = "かずとし"
     private val mLifeCycle: ActivityLifeCycle = ActivityLifeCycle(this)
 
     private lateinit var mBeaconManager: BeaconManager
@@ -36,6 +42,64 @@ class MainActivity : AppCompatActivity(), IActivityLifeCycle, BeaconConsumer {
     override fun onCreated() {
         mBeaconManager = BeaconManager.getInstanceForApplication(this)
         mBeaconManager.beaconParsers.add(BeaconParser().setBeaconLayout(BeaconUtil.IBEACON_FORMAT))
+        startListenSnapshot()
+    }
+
+    private fun startListenSnapshot() {
+        db.collection("ibeacon")
+                .orderBy("time", Query.Direction.ASCENDING)
+                .addSnapshotListener { snapshot, e ->
+
+                    if (e != null) {
+                        Log.d(TAG, "Listen failed: $e")
+                        return@addSnapshotListener
+                    }
+                    for (doc in snapshot.documentChanges) {
+                        when (doc.type) {
+                            DocumentChange.Type.ADDED -> {
+                                Log.d(TAG, "ADDED: " + doc.document.data)
+                                updateUI(doc.document.data)
+                            }
+                            else -> {
+                                Log.d(TAG, "${doc.type}: " + doc.document.data)
+                            }
+                        }
+                    }
+                }
+    }
+
+    private fun updateUI(data: Map<String, Any>) {
+        if (!data.containsKey("state")) return
+        when (ActiveState.valueOf(data["state"].toString())) {
+            ActiveState.ENTER -> {
+                Toast.makeText(this, "${name}が家に帰りました。", Toast.LENGTH_SHORT).show()
+                imageView.setBackgroundColor(Color.GREEN)
+                textViewState.text = "いま帰宅しました"
+            }
+            ActiveState.DWELL -> {
+                draw(data["sd"].toString().toDouble())
+            }
+            ActiveState.EXIT -> {
+                Toast.makeText(this, "${name}が外出しました。", Toast.LENGTH_SHORT).show()
+                imageView.setBackgroundColor(Color.GRAY)
+                textViewState.text = "外出中"
+            }
+        }
+    }
+
+    private fun draw(sd: Double) {
+        val activity = Math.ceil(sd).toInt()
+        when (activity) {
+            in Int.MIN_VALUE..-1 -> Pair(Color.GRAY, "外出中")
+            in 0..4 -> Pair(Color.BLUE, "お休み中")
+            in 5..7 -> Pair(Color.GREEN, "ゆっくり活動中")
+            in 8..10 -> Pair(Color.MAGENTA, "元気に活動中!")
+            else -> Pair(Color.RED, "超元気!!!!")
+        }
+                .let {
+                    imageView.setBackgroundColor(it.first)
+                    textViewState.text = it.second
+                }
     }
 
     override fun onConnected() {
@@ -63,7 +127,10 @@ class MainActivity : AppCompatActivity(), IActivityLifeCycle, BeaconConsumer {
             override fun didExitRegion(region: Region) {
 
                 createSendData(TARGET_UUID, ActiveState.EXIT, 0.0)
-                        .also { addToDB(it) }
+                        .also {
+                            iBeacons.clear()
+                            addToDB(it)
+                        }
 
                 mBeaconManager.stopRangingBeaconsInRegion(mRegion)
             }
@@ -132,6 +199,7 @@ class MainActivity : AppCompatActivity(), IActivityLifeCycle, BeaconConsumer {
     }
 
     private fun isBufferFilled(): Boolean = iBeacons.size > 0 && iBeacons[iBeacons.size - 1].time - iBeacons[0].time > 10000
+
     private fun sd(numArray: MutableList<IBeacon>): Double {
         val doubleArray = numArray.map { it.rssi }
         val mean = doubleArray.average()
